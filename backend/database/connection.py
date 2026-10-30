@@ -1,24 +1,30 @@
 
+import os
 import sqlite3
-from pathlib import Path
 from contextlib import contextmanager
+from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parents[2] / "chainpilot.db"
+ROOT = Path(__file__).resolve().parents[2]
+DB_PATH = Path(
+    os.getenv("CHAINPILOT_DB", str(ROOT / "chainpilot.db"))
+)
 
 
 @contextmanager
 def get_db():
-    conn = sqlite3.connect(DB_PATH, timeout=15)
-    conn.row_factory = sqlite3.Row
+    db = sqlite3.connect(str(DB_PATH), timeout=15)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys = ON")
+    db.execute("PRAGMA busy_timeout = 15000")
 
     try:
-        yield conn
-        conn.commit()
+        yield db
+        db.commit()
     except Exception:
-        conn.rollback()
+        db.rollback()
         raise
     finally:
-        conn.close()
+        db.close()
 
 
 def init_db():
@@ -61,7 +67,8 @@ def init_db():
                 total_cost REAL NOT NULL,
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL,
-                FOREIGN KEY(supplier_id) REFERENCES suppliers(id)
+                FOREIGN KEY(supplier_id)
+                    REFERENCES suppliers(id)
             );
 
             CREATE TABLE IF NOT EXISTS agent_logs (
@@ -70,4 +77,121 @@ def init_db():
                 action TEXT NOT NULL,
                 details TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS supplier_events (
+                event_id TEXT PRIMARY KEY,
+                order_id INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                result TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(order_id)
+                    REFERENCES purchase_orders(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS receipts (
+                receipt_id TEXT PRIMARY KEY,
+                order_id INTEGER NOT NULL,
+                quantity INTEGER NOT NULL CHECK(quantity > 0),
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(order_id)
+                    REFERENCES purchase_orders(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_po_component_status
+                ON purchase_orders(component, status);
         """)
+
+        # Add fields to EXISTING orders without
+        # deleting the original records.
+
+        columns = {
+            row["name"]
+            for row in db.execute(
+                "PRAGMA table_info(purchase_orders)"
+            )
+        }
+
+        upgrading_existing_orders = (
+            "fulfillable_quantity" not in columns
+        )
+
+        additions = {
+            "fulfillable_quantity": "INTEGER",
+            "received_quantity": "INTEGER NOT NULL DEFAULT 0",
+            "unit_price": "REAL",
+            "expected_delivery_days": "INTEGER",
+            "supplier_note": "TEXT",
+            "updated_at": "TEXT",
+        }
+
+        for column, definition in additions.items():
+            if column not in columns:
+                db.execute(
+                    f"ALTER TABLE purchase_orders "
+                    f"ADD COLUMN {column} {definition}"
+                )
+
+        # Existing purchase orders are assumed
+        # unreceived unless the database already
+        # has a receipt record.
+
+        db.execute("""
+            UPDATE purchase_orders
+            SET fulfillable_quantity = quantity
+            WHERE fulfillable_quantity IS NULL
+        """)
+
+        db.execute("""
+            UPDATE purchase_orders
+            SET unit_price =
+                CASE WHEN quantity > 0
+                    THEN total_cost * 1.0 / quantity
+                    ELSE 0
+                END
+            WHERE unit_price IS NULL
+        """)
+
+        db.execute("""
+            UPDATE purchase_orders
+            SET expected_delivery_days = (
+                SELECT delivery_days
+                FROM suppliers
+                WHERE suppliers.id =
+                      purchase_orders.supplier_id
+            )
+            WHERE expected_delivery_days IS NULL
+        """)
+
+        db.execute("""
+            UPDATE purchase_orders
+            SET updated_at = created_at
+            WHERE updated_at IS NULL
+        """)
+
+        # Old orders did not reserve supplier
+        # stock. Reserve them exactly once during
+        # migration to the new schema.
+
+        if upgrading_existing_orders:
+            db.execute("""
+                UPDATE suppliers
+                SET available = MAX(
+                    0,
+                    available - (
+                        SELECT COALESCE(
+                            SUM(po.quantity), 0
+                        )
+                        FROM purchase_orders po
+                        WHERE po.supplier_id = suppliers.id
+                          AND po.status IN (
+                              'pending_approval',
+                              'placed',
+                              'delayed',
+                              'shipped',
+                              'awaiting_receipt',
+                              'partially_received'
+                          )
+                    )
+                )
+            """)

@@ -60,6 +60,15 @@ Rules:
 - The backend enforces financial and approval limits.
 - If no action is necessary, explain why.
 - Keep your final summary concise.
+
+A delayed order still covers its outstanding quantity.
+Do not create a replacement unless the original commitment
+is cancelled or reduced.
+
+If a supplier cancels or partially fulfills an order,
+investigate the uncovered quantity and available alternatives.
+
+Only confirmed warehouse receipt increases physical stock.
 """
 
 
@@ -351,3 +360,66 @@ def run_supply_agent():
 
     finally:
         client.close()
+
+
+def _background_agent(context):
+    """
+    Run Gemini after a supplier or inventory event.
+    Errors are logged without changing the
+    successful supplier-event transaction.
+    """
+    try:
+        log_agent_action(
+            "agent_triggered_automatically",
+            {"context": context}
+        )
+
+        # Reuse the working Gemini agent.
+        run_supply_agent()
+
+    except Exception as exc:
+        import logging
+
+        logging.exception(
+            "Automatic ChainPilot agent failed"
+        )
+
+        log_agent_action(
+            "agent_failed",
+            {
+                "context": context,
+                "error_type": type(exc).__name__
+            }
+        )
+
+
+def trigger_agent_if_enabled(
+    background_tasks,
+    flag,
+    context
+):
+    enabled = os.getenv(
+        flag,
+        "true"
+        if flag == "AUTO_AGENT_ON_EVENTS"
+        else "false"
+    )
+
+    if enabled.strip().lower() not in (
+        "true",
+        "yes",
+        "1",
+        "on"
+    ):
+        return False
+
+    if not os.getenv("GEMINI_API_KEY"):
+        return False
+
+    background_tasks.add_task(
+        _background_agent,
+        context
+    )
+
+    return True
+
