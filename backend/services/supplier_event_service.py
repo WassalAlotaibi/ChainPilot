@@ -10,9 +10,8 @@ from backend.services.procurement_service import (
 
 
 def apply_supplier_event(event):
-    payload = event.model_dump()
-    canonical = json.dumps(
-        payload,
+    payload = json.dumps(
+        event.model_dump(),
         sort_keys=True
     )
 
@@ -23,50 +22,49 @@ def apply_supplier_event(event):
             """
             SELECT *
             FROM supplier_events
-            WHERE event_id = ?
+            WHERE event_id=?
             """,
             (event.event_id,)
         ).fetchone()
 
-        # Ignore duplicate notifications, but
-        # reject reused IDs with changed content.
         if previous:
-            if previous["payload"] != canonical:
+            if previous["payload"] != payload:
                 raise ValueError(
-                    "Event ID reused with different data"
+                    "Event ID reused with different content"
                 )
 
             result = json.loads(previous["result"])
-            result["duplicate_event"] = True
-            return result
+
+            return {
+                **result,
+                "duplicate_event": True
+            }
 
         order = db.execute(
             """
             SELECT *
             FROM purchase_orders
-            WHERE id = ?
+            WHERE id=?
             """,
             (event.order_id,)
         ).fetchone()
 
-        if not order:
-            raise LookupError("Purchase order not found")
+        if order is None:
+            raise LookupError("Order not found")
 
-        invalid_statuses = (
+        if order["status"] in (
             "pending_approval",
             "cancelled",
             "received",
             "rejected"
-        )
-
-        if order["status"] in invalid_statuses:
+        ):
             raise ValueError(
-                "Order cannot accept supplier updates "
+                "Order cannot accept supplier events "
                 "in its current status"
             )
 
-        updates = {
-            "supplier_note": event.note or None,
+        changes = {
+            "supplier_note": event.note,
             "updated_at": utc_now()
         }
 
@@ -75,167 +73,130 @@ def apply_supplier_event(event):
             "order_id": event.order_id,
             "event_type": event.event_type,
             "duplicate_event": False,
-            "message": "",
-            "requires_review": False
+            "requires_review": False,
+            "message": ""
         }
-
-        # ----------------------------------
-        # DELAY
-        # ----------------------------------
 
         if event.event_type == "delayed":
             if event.expected_delivery_days is None:
                 raise ValueError(
-                    "expected_delivery_days is required"
+                    "New delivery days required"
                 )
 
-            updates["expected_delivery_days"] = (
-                event.expected_delivery_days
+            changes.update(
+                status="delayed",
+                expected_delivery_days=event.expected_delivery_days
             )
-            updates["status"] = "delayed"
-
-            policy = get_policy(db)
 
             result["requires_review"] = (
                 event.expected_delivery_days
-                > policy["max_delivery_days"]
+                > get_policy(db)["max_delivery_days"]
             )
 
             result["message"] = (
-                "Delay recorded. The existing order "
-                "still covers its outstanding quantity. "
-                "A replacement requires cancellation "
-                "or an authorized change."
+                "Delay recorded; original order "
+                "still covers unreceived quantity."
             )
-
-        # ----------------------------------
-        # CANCELLATION
-        # ----------------------------------
 
         elif event.event_type == "cancelled":
-            updates["status"] = "cancelled"
-
-            # Previously received units stay
-            # in inventory. Unreceived units
-            # no longer cover procurement needs.
-            updates["fulfillable_quantity"] = (
-                order["received_quantity"]
+            changes.update(
+                status="cancelled",
+                fulfillable_quantity=order["received_quantity"]
             )
 
-            # Pause supplier for future sourcing
-            # until the manager reviews it.
             db.execute(
                 """
                 UPDATE suppliers
-                SET approved = 0
-                WHERE id = ?
+                SET approved=0
+                WHERE id=?
                 """,
                 (order["supplier_id"],)
             )
 
             result["message"] = (
-                "Order cancelled. Unreceived units "
-                "are now uncovered. Supplier paused "
-                "for new sourcing."
+                "Cancelled; uncovered units may "
+                "be sourced from another supplier."
             )
-
-        # ----------------------------------
-        # PARTIAL FULFILLMENT
-        # ----------------------------------
 
         elif event.event_type == "partial_fulfillment":
             confirmed = event.fulfillable_quantity
 
-            if confirmed is None:
-                raise ValueError(
-                    "fulfillable_quantity is required"
-                )
-
             if (
-                confirmed < order["received_quantity"]
+                confirmed is None
+                or confirmed < order["received_quantity"]
                 or confirmed > order["fulfillable_quantity"]
             ):
                 raise ValueError(
-                    "Confirmed quantity must be between "
-                    "already received and previously "
-                    "fulfillable quantities"
+                    "Fulfillable quantity must be between "
+                    "received and original confirmed quantity"
                 )
 
             if confirmed == 0:
                 raise ValueError(
-                    "Use a cancelled event when "
-                    "the supplier cannot supply anything"
+                    "Use cancelled when the supplier "
+                    "cannot deliver any units"
                 )
 
-            updates["fulfillable_quantity"] = confirmed
-            updates["total_cost"] = round(
-                order["unit_price"] * confirmed,
-                2
-            )
+            if confirmed == order["fulfillable_quantity"]:
+                result["message"] = (
+                    "Quantity unchanged; "
+                    "no replacement needed."
+                )
 
-            # If the entire confirmed quantity
-            # was already received, close the order.
-            if confirmed == order["received_quantity"]:
-                updates["status"] = "received"
+            else:
+                changes.update(
+                    fulfillable_quantity=confirmed,
+                    total_cost=round(
+                        order["unit_price"] * confirmed,
+                        2
+                    )
+                )
 
-            # Supplier cannot meet original order.
-            db.execute(
-                """
-                UPDATE suppliers
-                SET approved = 0
-                WHERE id = ?
-                """,
-                (order["supplier_id"],)
-            )
+                if confirmed == order["received_quantity"]:
+                    changes["status"] = "received"
 
-            result["message"] = (
-                "Supplier can fulfill only part of "
-                "the order. Remaining shortage can "
-                "be sourced from another supplier."
-            )
+                db.execute(
+                    """
+                    UPDATE suppliers
+                    SET approved=0
+                    WHERE id=?
+                    """,
+                    (order["supplier_id"],)
+                )
 
-        # ----------------------------------
-        # SHIPPED
-        # ----------------------------------
+                result["message"] = (
+                    "Supplier quantity reduced; uncovered "
+                    "units may be sourced elsewhere."
+                )
 
         elif event.event_type == "shipped":
-            updates["status"] = "shipped"
-
+            changes["status"] = "shipped"
             result["message"] = (
-                "Shipment recorded. Physical "
-                "inventory remains unchanged."
+                "Shipment reported. Inventory is unchanged."
             )
 
-        # ----------------------------------
-        # DELIVERED BY SUPPLIER
-        # ----------------------------------
-
         elif event.event_type == "delivered":
-            updates["status"] = "awaiting_receipt"
-
+            changes["status"] = "awaiting_receipt"
             result["message"] = (
                 "Supplier reports delivery. "
-                "Awaiting independent warehouse "
-                "receipt confirmation."
+                "Warehouse receipt still required."
             )
 
         else:
-            raise ValueError(
-                "Unsupported supplier event"
-            )
+            raise ValueError("Unsupported supplier event")
 
-        assignments = ", ".join(
-            f"{column} = ?"
-            for column in updates
+        assignments = ",".join(
+            f"{column}=?"
+            for column in changes
         )
 
         db.execute(
             f"""
             UPDATE purchase_orders
             SET {assignments}
-            WHERE id = ?
+            WHERE id=?
             """,
-            (*updates.values(), event.order_id)
+            (*changes.values(), event.order_id)
         )
 
         db.execute(
@@ -254,7 +215,7 @@ def apply_supplier_event(event):
                 event.event_id,
                 event.order_id,
                 event.event_type,
-                canonical,
+                payload,
                 json.dumps(result),
                 utc_now()
             )

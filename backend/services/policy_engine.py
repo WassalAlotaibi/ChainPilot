@@ -4,116 +4,116 @@ from backend.database.connection import get_db
 
 def get_policy(db=None):
     if db is None:
-        with get_db() as connection:
-            return get_policy(connection)
+        with get_db() as conn:
+            return get_policy(conn)
 
     row = db.execute(
-        "SELECT * FROM policies WHERE id = 1"
+        "SELECT * FROM policies WHERE id=1"
     ).fetchone()
 
     if row is None:
-        raise RuntimeError("Company policy is missing")
+        raise RuntimeError("Company policy missing")
 
     return dict(row)
 
 
 def rank_suppliers(component, quantity, db=None):
+    """
+    Rank eligible suppliers.
+
+    A supplier may fulfill part of the requested
+    quantity rather than the whole shortage.
+    """
     if db is None:
-        with get_db() as connection:
+        with get_db() as conn:
             return rank_suppliers(
-                component, quantity, connection
+                component, quantity, conn
             )
 
-    if not isinstance(quantity, int) or quantity < 1:
+    if (
+        not isinstance(quantity, int)
+        or isinstance(quantity, bool)
+        or quantity < 1
+    ):
         raise ValueError(
             "Quantity must be a positive integer"
         )
 
-    policy = get_policy(db)
+    p = get_policy(db)
 
-    rows = db.execute(
-        """
-        SELECT * FROM suppliers
-        WHERE component = ?
-          AND approved = 1
-          AND available >= ?
-          AND delivery_days <= ?
-          AND unit_price * ? <= ?
-        """,
-        (
-            component,
-            quantity,
-            policy["max_delivery_days"],
-            quantity,
-            policy["max_budget"]
-        )
-    ).fetchall()
+    offers = [
+        dict(row)
+        for row in db.execute(
+            """
+            SELECT *
+            FROM suppliers
+            WHERE component=?
+              AND approved=1
+              AND available>0
+              AND unit_price>0
+              AND delivery_days<=?
+            """,
+            (component, p["max_delivery_days"])
+        ).fetchall()
+    ]
 
-    suppliers = [dict(row) for row in rows]
-
-    if not suppliers:
+    if not offers:
         return []
 
-    min_price = min(
-        supplier["unit_price"]
-        for supplier in suppliers
+    lo = min(s["unit_price"] for s in offers)
+    hi = max(s["unit_price"] for s in offers)
+
+    weight_sum = (
+        p["speed_weight"]
+        + p["cost_weight"]
+        + p["reliability_weight"]
     )
 
-    max_price = max(
-        supplier["unit_price"]
-        for supplier in suppliers
-    )
-
-    total_weight = (
-        policy["speed_weight"]
-        + policy["cost_weight"]
-        + policy["reliability_weight"]
-    )
-
-    if total_weight <= 0:
+    if weight_sum <= 0:
         raise ValueError(
-            "At least one policy weight must be positive"
+            "Company policy requires positive weights"
         )
 
-    for supplier in suppliers:
-        speed_score = max(
-            0,
+    for s in offers:
+        speed = max(
+            0.0,
             1 - (
-                (supplier["delivery_days"] - 1)
-                / max(1, policy["max_delivery_days"] - 1)
+                (s["delivery_days"] - 1)
+                / max(1, p["max_delivery_days"] - 1)
             )
         )
 
-        cost_score = (
-            (max_price - supplier["unit_price"])
-            / (max_price - min_price)
-            if max_price > min_price
-            else 1
+        cost = (
+            (hi - s["unit_price"]) / (hi - lo)
+            if hi > lo else 1.0
         )
 
-        reliability_score = (
-            supplier["reliability"] / 100
-        )
+        reliability = s["reliability"] / 100
 
-        supplier["score"] = round(
+        s["score"] = round(
             (
-                policy["speed_weight"] * speed_score
-                + policy["cost_weight"] * cost_score
-                + policy["reliability_weight"]
-                * reliability_score
-            ) / total_weight,
+                p["speed_weight"] * speed
+                + p["cost_weight"] * cost
+                + p["reliability_weight"] * reliability
+            ) / weight_sum,
             4
         )
 
-        supplier["total_cost"] = round(
-            supplier["unit_price"] * quantity,
+        s["allocatable_units"] = min(
+            quantity,
+            s["available"]
+        )
+
+        s["total_cost"] = round(
+            s["unit_price"] * s["allocatable_units"],
             2
         )
 
     return sorted(
-        suppliers,
-        key=lambda supplier: (
-            -supplier["score"],
-            supplier["unit_price"]
+        offers,
+        key=lambda s: (
+            -s["score"],
+            s["unit_price"],
+            s["id"]
         )
     )

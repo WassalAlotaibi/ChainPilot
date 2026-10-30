@@ -1,7 +1,7 @@
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-
+from backend.services.supply_gap_service import get_supply_gaps
 from backend.services.procurement_service import (
     evaluate_procurement,
     get_purchase_orders,
@@ -72,3 +72,7 @@ def receive(order_id: int, data: ReceiptRequest):
             status_code=409,
             detail=str(exc)
         ) from exc
+
+@router.get("/gaps")
+def gaps():
+    return get_supply_gaps()

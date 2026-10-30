@@ -27,6 +27,9 @@ from backend.api.agent import (
 from backend.api.supplier_events import (
     router as supplier_events_router
 )
+from backend.api.demo import (
+    router as demo_router
+)
 
 
 @asynccontextmanager
@@ -42,7 +45,7 @@ app = FastAPI(
         "Policy-Aware Autonomous "
         "Supply Chain Intelligence"
     ),
-    version="0.3.0",
+    version="0.4.0",
     lifespan=lifespan
 )
 
@@ -53,13 +56,14 @@ app.include_router(policies_router)
 app.include_router(procurement_router)
 app.include_router(agent_router)
 app.include_router(supplier_events_router)
+app.include_router(demo_router)
 
 
 @app.get("/")
 def home():
     return {
         "project": "ChainPilot",
-        "version": "0.3.0",
+        "version": "0.4.0",
         "status": "running"
     }
 

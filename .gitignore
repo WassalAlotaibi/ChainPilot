@@ -1,8 +1,8 @@
+.env
 .venv/
+*.db
+*.db-journal
 __pycache__/
 *.pyc
-.env
-*.db
+.pytest_cache/
 .streamlit/secrets.toml
-google-genai
-python-dotenv
