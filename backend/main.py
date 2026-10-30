@@ -6,7 +6,9 @@ from backend.database.connection import init_db
 from backend.database.seed import seed_database
 from backend.api.inventory import router as inventory_router
 from backend.api.suppliers import router as suppliers_router
-
+from backend.api.policies import router as policies_router
+from backend.api.procurement import router as procurement_router
+from backend.api.agent import router as agent_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -24,7 +26,9 @@ app = FastAPI(
 
 app.include_router(inventory_router)
 app.include_router(suppliers_router)
-
+app.include_router(policies_router)
+app.include_router(procurement_router)
+app.include_router(agent_router)
 
 @app.get("/")
 def home():
