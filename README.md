@@ -231,9 +231,8 @@ Web interface: **http://localhost:8501**
 
 ## Demo Video
 
-**Demo video:** Add the YouTube, Google Drive, or GitHub-hosted video link here after uploading.
+**Demo video:** https://drive.google.com/file/d/1YjAv7hhQkZBaQYHQSnuQXzAqHcLJmyE1/view?usp=sharing
 
-**Presentation:** Add your Humane Hackathon pitch deck or screenshots here if you want judges to review them.
 
 ## What's Next?
 
