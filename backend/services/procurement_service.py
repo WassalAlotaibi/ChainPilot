@@ -11,7 +11,7 @@ from backend.services.policy_engine import get_policy, rank_suppliers
 
 ACTIVE_STATUSES = (
     "pending_approval", "placed", "delayed", "shipped",
-    "awaiting_receipt", "partially_received",
+    "awaiting_receipt", "cancellation_requested", "partially_received",
 )
 
 
@@ -339,4 +339,47 @@ def receive_purchase_order(order_id, quantity, receipt_id):
             "already_processed": False,
         }
         record_log(db, "warehouse_receipt", result)
+        
+
+        if status == "received":
+
+            import os
+
+            replenishment = max(
+                0,
+                int(
+                    os.getenv(
+                        "SUPPLIER_RESTOCK_ON_COMPLETE",
+                        "0"
+                    )
+                )
+            )
+
+            if replenishment > 0:
+                db.execute(
+                    """
+                    UPDATE suppliers
+                    SET available = available + ?
+                    WHERE id = ?
+                    """,
+                    (
+                        replenishment,
+                        order["supplier_id"]
+                    )
+                )
+
+                record_log(
+                    db,
+                    "supplier_simulated_restock",
+                    {
+                        "order_id": order_id,
+                        "supplier_id": order["supplier_id"],
+                        "units_added": replenishment,
+                        "reason": (
+                            "Fictional supplier production "
+                            "after complete warehouse receipt"
+                        )
+                    }
+                )
+
         return result

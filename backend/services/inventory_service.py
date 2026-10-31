@@ -6,6 +6,7 @@ ACTIVE_STATUSES = (
     "pending_approval",
     "placed",
     "delayed",
+    "cancellation_requested",
     "shipped",
     "awaiting_receipt",
     "partially_received",
@@ -33,7 +34,7 @@ def get_inventory(db=None):
                 received_quantity
             FROM purchase_orders
             WHERE component = ?
-              AND status IN (?, ?, ?, ?, ?, ?)
+            AND status IN (?, ?, ?, ?, ?, ?, ?)
             """,
             (item["component"], *ACTIVE_STATUSES)
         ).fetchall()

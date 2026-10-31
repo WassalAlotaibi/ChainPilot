@@ -54,6 +54,7 @@ def apply_supplier_event(event):
 
         if order["status"] in (
             "pending_approval",
+            "cancellation_requested",
             "cancelled",
             "received",
             "rejected"
@@ -77,26 +78,45 @@ def apply_supplier_event(event):
             "message": ""
         }
 
+
         if event.event_type == "delayed":
+
             if event.expected_delivery_days is None:
                 raise ValueError(
-                    "New delivery days required"
+                    "New delivery days are required"
                 )
 
-            changes.update(
-                status="delayed",
-                expected_delivery_days=event.expected_delivery_days
+            changes["expected_delivery_days"] = (
+                event.expected_delivery_days
             )
+
+            if order["status"] in (
+                "shipped",
+                "awaiting_receipt",
+                "partially_received"
+            ):
+                result["message"] = (
+                    "Delivery delay recorded. "
+                    "The shipment is already dispatched "
+                    "or partially received, so ChainPilot "
+                    "will not automatically cancel it."
+                )
+
+            else:
+                changes["status"] = "delayed"
+
+                result["message"] = (
+                    "Supplier delay recorded. "
+                    "ChainPilot will review the order "
+                    "against the current purchasing policy."
+                )
 
             result["requires_review"] = (
                 event.expected_delivery_days
                 > get_policy(db)["max_delivery_days"]
             )
 
-            result["message"] = (
-                "Delay recorded; original order "
-                "still covers unreceived quantity."
-            )
+
 
         elif event.event_type == "cancelled":
             changes.update(

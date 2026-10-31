@@ -30,6 +30,7 @@ from backend.api.supplier_events import (
 from backend.api.demo import (
     router as demo_router
 )
+from backend.api.recovery import router as recovery_router
 
 
 @asynccontextmanager
@@ -57,6 +58,7 @@ app.include_router(procurement_router)
 app.include_router(agent_router)
 app.include_router(supplier_events_router)
 app.include_router(demo_router)
+app.include_router(recovery_router)
 
 
 @app.get("/")

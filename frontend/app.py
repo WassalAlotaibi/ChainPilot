@@ -1,684 +1,550 @@
-"""ChainPilot — operator-friendly Streamlit interface.
-
-Run from the project root:
-    python -m streamlit run frontend/app.py
-
-This frontend calls existing ChainPilot FastAPI endpoints only.
-"""
-
+"""ChainPilot Streamlit UI. Start: python -m streamlit run frontend/app.py"""
 import json
 import os
 import uuid
 from pathlib import Path
 
+import pandas as pd
 import requests
 import streamlit as st
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(ROOT / ".env")
-API = os.getenv("CHAINPILOT_API", "http://127.0.0.1:8000").rstrip("/")
-AUTO = os.getenv("AUTO_AGENT_ON_INVENTORY", "false").strip().lower() == "true"
+load_dotenv(ROOT / '.env')
+API = os.getenv('CHAINPILOT_API', 'http://127.0.0.1:8000').rstrip('/')
+SECRET = os.getenv('SUPPLIER_WEBHOOK_SECRET', '')
+AUTO = os.getenv('AUTO_AGENT_ON_INVENTORY', 'false').lower() == 'true'
+AUTOCANCEL = os.getenv('DEMO_AUTO_CONFIRM_CANCELLATION', 'false').lower() == 'true'
+ACTIVE = {'pending_approval', 'placed', 'delayed', 'cancellation_requested', 'shipped', 'awaiting_receipt', 'partially_received'}
+RECEIVABLE = {'placed', 'delayed', 'shipped', 'awaiting_receipt', 'partially_received'}
+PAGES = ['Dashboard', 'Factory Inventory', 'Suppliers', 'Settings']
 
-st.set_page_config(page_title="ChainPilot | Operations", page_icon="🏭", layout="wide")
-st.markdown(
-    """
-    <style>
-    .block-container {max-width: 1170px; padding-top: 1.8rem; padding-bottom: 3rem;}
-    [data-testid="stSidebar"] {border-right: 1px solid rgba(130,145,165,.18);}
-    [data-testid="stMetric"] {padding: 17px 20px; border-radius: 12px;
-        border: 1px solid rgba(145,155,170,.24); background: rgba(125,140,160,.045);}
-    [data-testid="stMetricLabel"] {font-size: .89rem;}
-    h1,h2,h3 {letter-spacing: -.025em;}
-    div[data-testid="stAlert"] {border-radius: 10px;}
-    .cp-kicker {font-size: .75rem; letter-spacing: .14em; font-weight: 700;
-        color: #58b9b2; text-transform: uppercase; margin-bottom: .35rem;}
-    .cp-title {font-size: 2.05rem; font-weight: 750; letter-spacing: -.04em;
-        margin: 0 0 6px; line-height: 1.2;}
-    .cp-sub {font-size: 1rem; opacity: .72; margin-bottom: 20px;}
-    .cp-surface {border: 1px solid rgba(135,150,170,.22); border-radius: 12px;
-        padding: 13px 17px; margin-bottom: 13px;}
-    .cp-step {border-left: 3px solid #4bb8ac; padding: 7px 0 7px 16px;
-        margin: 10px 0;}
-    .cp-step-title {font-size: .98rem; font-weight: 700;}
-    .cp-step-sub {font-size: .87rem; opacity: .75; margin-top: 3px;}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+st.set_page_config(page_title='ChainPilot | Procurement', page_icon=':material/hub:', layout='wide')
+st.markdown('''<style>
+:root {--cp-teal:#148b83;--cp-blue:#367ca7;--cp-line:color-mix(in srgb,currentColor 13%,transparent)}
+.block-container {max-width:1240px;padding-top:1.7rem;padding-bottom:3rem}
+h1 {font-size:2.1rem!important;letter-spacing:-.035em}
+h2 {font-size:1.42rem!important;letter-spacing:-.02em;padding-top:.35rem}
+h3 {font-size:1.07rem!important}
+[data-testid="stSidebar"] {border-right:1px solid var(--cp-line)}
+[data-testid="stMetric"] {padding:16px 18px;border-radius:13px;border:1px solid var(--cp-line);background:color-mix(in srgb,currentColor 2%,transparent)}
+[data-testid="stMetricLabel"] {font-weight:550;opacity:.76}
+[data-testid="stMetricValue"] {font-variant-numeric:tabular-nums;font-size:1.55rem}
+[data-testid="stDataFrame"] {border-radius:10px;overflow:hidden}
+[data-testid="stAlert"] {border-radius:11px}
+[data-testid="stSidebar"] .stButton button {min-height:42px;justify-content:flex-start!important;gap:12px!important;text-align:left!important;border:1px solid transparent!important;background:transparent!important;color:inherit!important;border-radius:9px!important;box-shadow:none!important;font-weight:520!important}
+[data-testid="stSidebar"] .stButton button:hover {background:color-mix(in srgb,currentColor 7%,transparent)!important}
+[data-testid="stSidebar"] .stButton button [data-testid="stIconMaterial"],
+[data-testid="stSidebar"] .stButton button span[data-testid="stIconMaterial"] {flex:0 0 20px;min-width:20px;display:inline-flex;align-items:center;justify-content:center}
+[data-testid="stSidebar"] .stButton button p {margin:0;line-height:1.2}
+.cp-kicker {font-size:.69rem;letter-spacing:.13em;font-weight:750;color:#198c86;margin-bottom:8px}
+.cp-description {font-size:.89rem;opacity:.7;margin-top:-6px;margin-bottom:18px}
+.cp-brand {display:flex;gap:11px;align-items:center;padding:12px 0 20px}
+.cp-symbol {width:39px;height:39px;display:grid;place-items:center;background:#134541;color:#eafff8;border-radius:11px;font-weight:800;letter-spacing:-.03em;flex-shrink:0}
+.cp-name {font-size:1.08rem;font-weight:800;line-height:1.2}
+.cp-caption {font-size:.73rem;opacity:.68;line-height:1.4;margin-top:3px}
+.cp-side-label {font-size:.68rem;letter-spacing:.12em;font-weight:750;opacity:.55;padding:6px 3px 9px}
+.cp-side-footer {margin-top:25px;border-top:1px solid var(--cp-line);padding-top:17px;font-size:.8rem;line-height:1.6;opacity:.75}
+.cp-dot {width:8px;height:8px;border-radius:50%;background:#89949e;display:inline-block;margin-right:8px}
+.cp-dot.on {background:#159d87}
+.cp-note {font-size:.82rem;opacity:.72;line-height:1.5}
+.cp-label {font-size:.78rem;font-weight:650;opacity:.85}
+.cp-chip {display:inline-block;font-size:.72rem;font-weight:700;padding:3px 9px;border-radius:7px;background:rgba(20,139,131,.12);color:#1a9d92}
+.cp-stat {border-left:3px solid var(--cp-teal);padding:8px 13px;margin:10px 0}
+.cp-section {margin:13px 0 7px;font-weight:680}
+/* Fields remain left-to-right regardless of browser/OS locale. */
+[data-testid="stTextInput"] input {direction:ltr!important;text-align:left!important;font-variant-numeric:tabular-nums}
+</style>''', unsafe_allow_html=True)
 
 
-# ---- Reliable backend calls ------------------------------------------
-def api(method, endpoint, *, timeout=25, **kwargs):
+def api(method, route, timeout=40, **kw):
     try:
-        response = requests.request(method, API + endpoint, timeout=timeout, **kwargs)
-        response.raise_for_status()
-        return response.json()
+        res = requests.request(method, API + route, timeout=timeout, **kw)
+        res.raise_for_status()
+        return res.json()
     except requests.RequestException as exc:
-        message = str(exc)
-        if getattr(exc, "response", None) is not None:
+        reason = str(exc)
+        if exc.response is not None:
             try:
-                result = exc.response.json()
-                message = str(result.get("detail", result))
-            except (ValueError, AttributeError):
-                message = exc.response.text[:350]
-        st.error(f"Cannot complete this action: {message}")
+                body = exc.response.json()
+                reason = str(body.get('detail', body))
+            except (ValueError, TypeError):
+                reason = exc.response.text[:250]
+        st.error('Request failed: ' + reason)
         st.stop()
 
 
-def money(value):
-    return f"{float(value):,.0f} SAR"
+def money(x):
+    return f'{float(x or 0):,.0f} SAR'
 
 
-def label(value):
-    return str(value or "unknown").replace("_", " ").capitalize()
+def label(s):
+    return str(s or '').replace('_', ' ').capitalize()
 
 
-def finish(message):
-    st.session_state["notice"] = message
-    st.rerun()
-
-
-def safe_json(value):
+def log_data(row):
+    d = row.get('details') or {}
+    if isinstance(d, dict):
+        return d
     try:
-        return json.loads(value or "{}")
+        p = json.loads(d)
+        return p if isinstance(p, dict) else {}
     except (TypeError, ValueError):
         return {}
 
 
-def outstanding_spend(orders):
-    statuses = {
-        "pending_approval", "placed", "delayed", "shipped",
-        "awaiting_receipt", "partially_received",
-    }
-    return sum(
-        int(order.get("outstanding_quantity") or 0)
-        * float(order.get("unit_price") or 0)
-        for order in orders
-        if order["status"] in statuses
-    )
+def notify(msg, icon=':material/check_circle:'):
+    st.session_state['cp_notice'] = (msg, icon)
+    st.rerun()
 
 
-def explain_gap(item, suppliers, policy, available_budget):
-    """Explain known constraints, not an invented AI opinion."""
-    need = int(item.get("uncovered_shortage") or 0)
-    offers = [s for s in suppliers if s["component"] == item["component"]]
-    stocked = [s for s in offers if int(s["available"]) > 0]
-    approved = [s for s in stocked if s["approved"] and float(s["unit_price"]) > 0]
-    eligible = [
-        s for s in approved
-        if int(s["delivery_days"]) <= int(policy["max_delivery_days"])
-    ]
-    eligible_units = sum(int(s["available"]) for s in eligible)
-
-    if not stocked:
-        reason = "No supplier stock"
-        detail = "All listed suppliers are out of stock"
-    elif not approved:
-        reason = "Supplier approval"
-        detail = "Suppliers have stock, but no stocked supplier is approved"
-    elif not eligible:
-        reason = "Delivery limit"
-        detail = "Approved suppliers exceed the allowed delivery time"
-    elif available_budget <= 0:
-        reason = "Budget exhausted"
-        detail = "Existing orders already use the outstanding budget"
-    elif available_budget < min(float(s["unit_price"]) for s in eligible):
-        reason = "Budget too low"
-        detail = "Remaining budget cannot buy one unit"
-    elif eligible_units < need:
-        reason = "Limited supplier stock"
-        detail = f"Only {eligible_units} eligible units available for {need} needed"
-    else:
-        left = need
-        lowest_possible_cost = 0.0
-        for supplier in sorted(eligible, key=lambda s: float(s["unit_price"])):
-            qty = min(left, int(supplier["available"]))
-            lowest_possible_cost += qty * float(supplier["unit_price"])
-            left -= qty
-            if left == 0:
-                break
-        if lowest_possible_cost > available_budget:
-            reason = "Budget limited"
-            detail = "Available budget cannot cover the full shortage"
-        else:
-            reason = "Ready to evaluate"
-            detail = "Supplier stock and budget are available"
-
-    if eligible_units < need and reason not in ("No supplier stock", "Limited supplier stock"):
-        detail += f"; eligible supplier capacity is {eligible_units} units"
-    if available_budget <= 0 and reason != "Budget exhausted":
-        detail += "; budget is also fully committed"
-    return reason, detail
-
-
-def recent_business_events(events):
-    entries = []
-    for event in events:
-        action = event.get("action")
-        data = safe_json(event.get("details"))
-        description = None
-        if action == "procurement_order":
-            description = (
-                f"Created order: {data.get('quantity', '?')} {data.get('component', 'units')} "
-                f"from {data.get('supplier', 'supplier')} for "
-                f"{money(data.get('total_cost', 0))} ({label(data.get('action'))})"
-            )
-        elif action == "procurement_escalation":
-            description = (
-                f"{data.get('uncovered_quantity', '?')} {data.get('component', 'units')} "
-                f"still unfulfilled: {data.get('reason', 'review constraints')}"
-            )
-        elif action == "order_approved":
-            description = f"Manager approved order #{data.get('order_id', '?')}"
-        elif action == "warehouse_receipt":
-            description = (
-                f"Warehouse received {data.get('quantity_added', '?')} units "
-                f"for order #{data.get('order_id', '?')}"
-            )
-        elif action == "supplier_event":
-            description = (
-                f"Supplier reported {label(data.get('event_type'))} "
-                f"for order #{data.get('order_id', '?')}"
-            )
-        elif action == "demo_stock_adjusted":
-            description = (
-                f"Factory {data.get('action', 'adjusted')} {data.get('quantity', '?')} "
-                f"{data.get('component', 'units')}"
-            )
-        elif action == "demo_target_changed":
-            description = f"Production target changed to {data.get('target', '?')} laptops"
-        elif action == "demo_scenario_loaded":
-            description = "Loaded a demonstration scenario"
-        elif action == "demo_reset":
-            description = "Demo factory reset"
-        elif action == "agent_completed":
-            description = "Gemini completed an evaluation"
-        elif action == "agent_failed":
-            description = "Gemini evaluation failed; check server logs"
-        if description:
-            entries.append({
-                "Time (UTC)": str(event.get("timestamp", ""))[:19].replace("T", " "),
-                "Event": description,
-            })
-    return entries
-
-
-def tool_steps(trace):
-    """Extract only actual Gemini calls; never fabricate agent actions."""
-    open_needs = []
-    rankings = []
-    actions = []
-    called = set()
-    for call in trace:
-        name = call.get("tool")
-        called.add(name)
-        result = call.get("result")
-        if name == "get_open_needs" and isinstance(result, list):
-            open_needs = result
-        elif name == "rank_suppliers":
-            rankings.append((call.get("arguments") or {}, result))
-        elif name == "execute_procurement" and isinstance(result, dict):
-            actions.extend(result.get("actions") or [])
-    return open_needs, rankings, actions, called
-
-
-def render_agent_steps(trace, summary=None):
-    needs, rankings, actions, called = tool_steps(trace)
-    st.markdown("#### AI decision steps")
-    if not trace:
-        st.caption("No tool-call trace is available for this run yet.")
-        if summary:
-            with st.expander("Gemini's summary"):
-                st.markdown(summary)
+def table(rows, status=None):
+    if not rows:
+        st.caption('Nothing to display yet.')
         return
-
-    with st.container(border=True):
-        st.markdown("**01  Inspect factory demand**")
-        if needs:
-            shortages = [x for x in needs if int(x.get("uncovered_shortage") or 0) > 0]
-            if shortages:
-                st.dataframe([
-                    {
-                        "Component": x["component"],
-                        "In stock": x["stock"],
-                        "Demand": x["demand"],
-                        "Already ordered": x["ordered_or_pending"],
-                        "Uncovered": x["uncovered_shortage"],
-                    }
-                    for x in shortages
-                ], hide_index=True, use_container_width=True)
+    df = pd.DataFrame(rows)
+    if status and status in df:
+        def style(r):
+            s = str(r[status]).lower()
+            if any(v in s for v in ('cancel', 'failed', 'blocked', 'exhausted')):
+                color = 'rgba(215,75,74,.16)'
+            elif any(v in s for v in ('delay', 'pending', 'waiting', 'requested', 'limited', 'risk')):
+                color = 'rgba(218,153,55,.17)'
+            elif any(v in s for v in ('received', 'eligible', 'approved', 'ready', 'completed')):
+                color = 'rgba(38,153,112,.15)'
             else:
-                st.write("Gemini found no uncovered purchasing need in the inventory snapshot.")
-        else:
-            st.caption("An inventory inspection result was not recorded for this run.")
+                color = 'rgba(50,124,166,.12)'
+            return [f'background-color:{color}' if k == status else '' for k in r.index]
+        st.dataframe(df.style.apply(style, axis=1), hide_index=True, use_container_width=True)
+    else:
+        st.dataframe(df, hide_index=True, use_container_width=True)
 
-    with st.container(border=True):
-        st.markdown("**02  Review supplier candidates**")
-        if rankings:
-            for args, result in rankings:
-                st.caption(f"{args.get('component', 'Component')} — {args.get('quantity', '?')} units")
-                if isinstance(result, list) and result:
-                    st.dataframe([
-                        {
-                            "Supplier": s.get("name", ""),
-                            "Available": s.get("available", 0),
-                            "Unit price (SAR)": s.get("unit_price", 0),
-                            "Delivery days": s.get("delivery_days", 0),
-                            "Policy score": s.get("score", ""),
-                        }
-                        for s in result
-                    ], hide_index=True, use_container_width=True)
-                elif isinstance(result, dict) and result.get("error"):
-                    st.caption(f"Ranking failed: {result['error']}")
-                else:
-                    st.caption("No eligible supplier was returned by this tool call.")
-        else:
-            st.caption("No supplier-ranking tool call was recorded (it may not have been necessary).")
 
-    with st.container(border=True):
-        st.markdown("**03  Execute procurement or escalate**")
-        purchases = [a for a in actions if a.get("order_id") is not None]
-        escalations = [a for a in actions if a.get("action") == "escalated"]
-        if purchases:
-            st.dataframe([
-                {
-                    "Order": a["order_id"],
-                    "Component": a.get("component", ""),
-                    "Supplier": a.get("supplier", ""),
-                    "Units": a.get("quantity", 0),
-                    "Cost (SAR)": a.get("total_cost", 0),
-                    "Status": label(a.get("action")),
-                }
-                for a in purchases
-            ], hide_index=True, use_container_width=True)
-        if escalations:
-            st.dataframe([
-                {
-                    "Component": a.get("component", ""),
-                    "Still unfulfilled": a.get("uncovered_quantity", 0),
-                    "Reason": a.get("reason", "Check policy or supplier availability"),
-                }
-                for a in escalations
-            ], hide_index=True, use_container_width=True)
-        if not actions:
-            if "execute_procurement" in called:
-                st.write("The procurement service created no new orders.")
-            else:
-                st.caption("Gemini did not request procurement execution in this run.")
+def outstanding_budget(orders):
+    return sum(float(o.get('unit_price') or 0) * int(o.get('outstanding_quantity') or 0)
+               for o in orders if o.get('status') in ACTIVE)
 
-    if summary:
-        with st.expander("Gemini's complete explanation"):
-            st.markdown(summary)
-    with st.expander("Technical tool calls"):
+
+def reason_for_gap(item, suppliers, policy, left_budget):
+    eligible = [s for s in suppliers if s['component'] == item['component'] and s['available'] > 0]
+    if not eligible:
+        return 'Supplier stock unavailable', 'No supplier currently has available stock.'
+    eligible = [s for s in eligible if s['approved']]
+    if not eligible:
+        return 'Supplier blocked', 'Suppliers with stock are paused.'
+    eligible = [s for s in eligible if s['delivery_days'] <= policy['max_delivery_days']]
+    if not eligible:
+        return 'Delivery limited', 'Available suppliers exceed the delivery limit.'
+    if left_budget < min(float(s['unit_price']) for s in eligible):
+        return 'Budget exhausted', 'Outstanding commitments leave insufficient budget.'
+    if sum(s['available'] for s in eligible) < item['uncovered_shortage']:
+        return 'Supplier stock limited', 'Not enough eligible supplier units to cover the entire shortage.'
+    return 'Ready to evaluate', 'Eligible suppliers exist; ChainPilot can assess an order.'
+
+
+def order_rows(orders):
+    return [{'Order': f"#{o['id']}", 'Component': o['component'], 'Supplier': o['supplier'],
+             'Ordered': o['quantity'], 'Received': o['received_quantity'],
+             'Cost (SAR)': o['total_cost'], 'Status': label(o['status'])} for o in orders]
+
+
+def event_message(e, lookup):
+    a, d = e.get('action'), log_data(e)
+    oid = d.get('order_id')
+    if a == 'procurement_order':
+        return f"Order created: {d.get('quantity')} {d.get('component')} from {d.get('supplier')} — {money(d.get('total_cost'))}"
+    if a == 'warehouse_receipt':
+        return f"Warehouse received {d.get('quantity_added')} units for order #{oid}"
+    if a == 'supplier_event':
+        return f"{lookup.get(oid, {}).get('supplier', 'Supplier')} reported {label(d.get('event_type'))} on order #{oid}"
+    if a == 'recovery_decision':
+        return f"Order #{oid}: {label(d.get('decision'))} — {d.get('reason', '')}"
+    if a == 'recovery_cancellation_confirmed':
+        return f"Cancellation confirmed for order #{oid}; {d.get('units_released')} units released"
+    if a == 'order_approved':
+        return f'Manager approved order #{oid}'
+    if a == 'agent_completed':
+        return 'ChainPilot completed an evaluation'
+    if a == 'procurement_escalation':
+        return f"Unfulfilled {d.get('component')}: {d.get('reason')}"
+    if a == 'supplier_simulated_restock':
+        return f"Supplier replenished {d.get('units_added')} units (demo simulation)"
+    return None
+
+
+def run_result(result):
+    trace = result.get('trace') or []
+    buys, issues, rankings = [], [], []
+    for t in trace:
+        if t.get('tool') == 'rank_suppliers':
+            rankings.append(t)
+        if t.get('tool') == 'execute_procurement' and isinstance(t.get('result'), dict):
+            for a in t['result'].get('actions') or []:
+                (buys if a.get('order_id') is not None else issues).append(a)
+    if result.get('status') == 'completed':
+        st.success('ChainPilot completed its evaluation.')
+    else:
+        st.warning('Evaluation status: ' + label(result.get('status')))
+    if buys:
+        table([{'Order': f"#{a['order_id']}", 'Component': a.get('component'),
+                'Supplier': a.get('supplier'), 'Units': a.get('quantity'),
+                'Cost (SAR)': a.get('total_cost'), 'Decision': label(a.get('action'))} for a in buys], 'Decision')
+    elif not issues:
+        st.info('No new purchase orders were created in this run.')
+    for a in issues:
+        st.warning(f"{a.get('component')}: {a.get('uncovered_quantity')} units still unfulfilled. {a.get('reason', '')}")
+    with st.expander('View full evaluation explanation', expanded=False):
+        st.markdown(result.get('summary') or 'No AI summary returned.')
+    with st.expander('See supplier comparisons and tool records', expanded=False):
+        for t in rankings:
+            st.markdown('**' + str((t.get('arguments') or {}).get('component', 'Supplier comparison')) + '**')
+            if isinstance(t.get('result'), list):
+                table(t['result'])
         st.json(trace)
 
 
-def run_gemini():
-    with st.spinner("Gemini is checking needs, policies, suppliers and existing orders..."):
-        output = api("POST", "/agent/run", timeout=180)
-    st.session_state["manual_agent_result"] = output
-    finish("Agent evaluation finished. See the recorded decision steps below.")
+def automatic_history(logs):
+    starts = [x for x in logs if x.get('action') == 'agent_started' and log_data(x).get('source') == 'automatic']
+    if not starts:
+        st.caption('No automatic agent evaluations recorded.')
+        return
+    for start in starts[:2]:
+        rid = log_data(start).get('run_id')
+        if not rid:
+            continue
+        related = sorted((e for e in logs if log_data(e).get('run_id') == rid), key=lambda x: x.get('id', 0))
+        final = next((e for e in reversed(related) if e.get('action') in ('agent_completed', 'agent_failed', 'agent_incomplete')), None)
+        state = label(final['action'].replace('agent_', '')) if final else 'Running'
+        with st.expander(f"{log_data(start).get('trigger', 'Automatic inventory change')} · {state}"):
+            for e in related:
+                if e.get('action') == 'agent_tool_call':
+                    d = log_data(e)
+                    st.write(f"**{label(d.get('tool'))}:** {d.get('explanation', 'Tool result saved.')}")
+            if final:
+                st.markdown(log_data(final).get('summary') or 'Evaluation finished.')
 
 
-# ---- Sidebar and navigation ------------------------------------------
-PAGES = ["Dashboard", "Factory Inventory", "Suppliers", "Settings"]
-if "page" not in st.session_state:
-    st.session_state["page"] = "Dashboard"
+# NAVIGATION: Material icons belong to their buttons, not separate floating HTML.
+if 'cp_page' not in st.session_state:
+    st.session_state.cp_page = 'Dashboard'
+if 'cp_next' in st.session_state:
+    st.session_state.cp_page = st.session_state.pop('cp_next')
 
-
-def go_to(page):
-    st.session_state["page"] = page
-
-
-st.sidebar.markdown("## ChainPilot")
-st.sidebar.caption("Supply chain operations")
-page = st.sidebar.radio("Workspace", PAGES, key="page")
-st.sidebar.divider()
-st.sidebar.caption("Inventory automation: " + ("Enabled" if AUTO else "Manual testing"))
-if st.sidebar.button("Refresh", use_container_width=True):
+def go(where):
+    st.session_state.cp_next = where
     st.rerun()
 
-if st.session_state.get("notice"):
-    st.success(st.session_state.pop("notice"))
-
-
-# ---- DASHBOARD -------------------------------------------------------
-if page == "Dashboard":
-    st.markdown('<div class="cp-kicker">Operations / Overview</div>', unsafe_allow_html=True)
-    st.markdown('<div class="cp-title">Factory Dashboard</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="cp-sub">Current demand, procurement decisions, and outstanding orders — all in one place.</div>',
-        unsafe_allow_html=True,
-    )
-
-    inventory = api("GET", "/inventory/")
-    orders = api("GET", "/procurement/orders")
-    suppliers = api("GET", "/suppliers/")
-    policy = api("GET", "/policies/")
-    events = api("GET", "/activity")
-
-    committed = outstanding_spend(orders)
-    budget_left = max(0, float(policy["max_budget"]) - committed)
-    remaining = sum(int(x["uncovered_shortage"]) for x in inventory)
-    pending = [o for o in orders if o["status"] == "pending_approval"]
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Units still to source", remaining, help="Units not in stock and not already covered by open orders")
-    m2.metric("Orders awaiting approval", len(pending), help="Purchases the manager must approve")
-    m3.metric("Budget available", money(budget_left), help="Outstanding commitment limit minus active unreceived orders")
-
-    st.subheader("Needs attention")
-    st.caption("What is still missing and the actual constraint preventing it from being ordered.")
-    attention = []
-    for item in inventory:
-        if int(item["uncovered_shortage"]) <= 0:
-            continue
-        cause, explanation = explain_gap(item, suppliers, policy, budget_left)
-        attention.append({
-            "Component": item["component"],
-            "Still needed": int(item["uncovered_shortage"]),
-            "Already on order": int(item["ordered_or_pending"]),
-            "Reason / status": cause,
-            "Explanation": explanation,
-        })
-    if attention:
-        st.dataframe(attention, hide_index=True, use_container_width=True)
+with st.sidebar:
+    logo = ROOT / 'frontend' / 'assets' / 'logo.png'
+    if logo.exists():
+        a, b = st.columns([1, 3], vertical_alignment='center')
+        a.image(str(logo), width=42)
+        b.markdown('**ChainPilot**')
     else:
-        st.info("No new purchasing shortage. Some orders may still need approval or physical delivery.")
+        st.markdown('<div class="cp-brand"><div class="cp-symbol">CP</div><div><div class="cp-name">ChainPilot</div><div class="cp-caption">Procurement intelligence</div></div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="cp-side-label">WORKSPACE</div>', unsafe_allow_html=True)
+    for title, ico, key in [
+        ('Dashboard', 'space_dashboard', 'dashboard'),
+        ('Factory Inventory', 'inventory_2', 'inventory'),
+        ('Suppliers', 'local_shipping', 'suppliers'),
+        ('Settings', 'tune', 'settings'),
+    ]:
+        if st.button(title, icon=f':material/{ico}:', key=f'cp_nav_{key}', use_container_width=True):
+            go(title)
+        if title == st.session_state.cp_page:
+            st.markdown(f'<style>.st-key-cp_nav_{key} button {{background:rgba(20,139,131,.13)!important;border-left:3px solid #148b83!important;font-weight:700!important;padding-left:10px!important}}</style>', unsafe_allow_html=True)
+    st.markdown('<div class="cp-side-footer">INVENTORY MONITORING<br><span class="cp-dot '+('on' if AUTO else '')+'"></span><strong>'+('Automatic' if AUTO else 'Manual')+'</strong><div class="cp-note">'+('New inventory changes can trigger ChainPilot.' if AUTO else 'Run ChainPilot from the Dashboard.')+'</div></div>', unsafe_allow_html=True)
 
-    policy_col, agent_col = st.columns([2, 1], gap="medium")
-    with policy_col:
-        st.markdown(
-            f"**Current buying policy:** speed {policy['speed_weight']} / "
-            f"cost {policy['cost_weight']} / reliability {policy['reliability_weight']}  "
-            f"\nDelivery limit: {policy['max_delivery_days']} days · "
-            f"Outstanding budget: {money(policy['max_budget'])}"
-        )
-    with agent_col:
-        st.button("Manage policies", on_click=go_to, args=("Settings",), use_container_width=True)
+if st.session_state.get('cp_notice'):
+    message, icon = st.session_state.pop('cp_notice')
+    st.toast(message, icon=icon)
 
+page = st.session_state.cp_page
+
+if page == 'Dashboard':
+    st.markdown('<div class="cp-kicker">OPERATIONS OVERVIEW</div>', unsafe_allow_html=True)
+    st.title('Factory Dashboard')
+    st.markdown('<div class="cp-description">Inventory needs, supplier risks, and every purchasing decision in one place.</div>', unsafe_allow_html=True)
+    inv = api('GET', '/inventory/')
+    orders = api('GET', '/procurement/orders')
+    suppliers = api('GET', '/suppliers/')
+    policy = api('GET', '/policies/')
+    recovery = api('GET', '/recovery/decisions')
+    logs = api('GET', '/activity')
+    lookup = {o['id']: o for o in orders}
+    budget = max(0, float(policy['max_budget']) - outstanding_budget(orders))
+    missing = [i for i in inv if i.get('uncovered_shortage', 0) > 0]
+    delays = [o for o in orders if o['status'] in ('delayed', 'cancellation_requested')]
+    approvals = [o for o in orders if o['status'] == 'pending_approval']
+    m = st.columns(4)
+    m[0].metric('Unfulfilled units', sum(i['uncovered_shortage'] for i in missing))
+    m[1].metric('Supplier risks', len(delays))
+    m[2].metric('Approvals needed', len(approvals))
+    m[3].metric('Budget available', money(budget))
+    if missing:
+        st.error('Factory demand is not fully covered. Review the shortages below.')
+    elif delays:
+        st.warning('All demand is covered, but some deliveries are at risk.')
+    elif approvals:
+        st.warning('Orders are awaiting manager approval.')
+    else:
+        st.success('No uncovered shortages, active delays, or pending approvals.')
+    st.subheader('Needs attention')
+    table([{'Component': i['component'], 'Missing': i['uncovered_shortage'],
+            'Already on order': i['ordered_or_pending'], 'Status': reason_for_gap(i, suppliers, policy, budget)[0],
+            'Explanation': reason_for_gap(i, suppliers, policy, budget)[1]} for i in missing], 'Status')
+    st.subheader('Supplier disruptions')
+    recent = {}
+    for r in recovery:
+        recent.setdefault(r.get('order_id'), r)
+    rows = []
+    for o in delays:
+        r = recent.get(o['id'], {})
+        decision = ('Awaiting cancellation confirmation' if o['status'] == 'cancellation_requested'
+                    else 'Keep order' if r.get('decision') == 'keep_order' else 'Delay under review')
+        rows.append({'Order': f"#{o['id']}", 'Supplier': o['supplier'], 'Component': o['component'],
+                     'Delivery (days)': o['expected_delivery_days'], 'Decision': decision,
+                     'Why': r.get('reason', 'No recovery decision recorded yet.')})
+    table(rows, 'Decision')
+    cancelled = [o for o in orders if o['status'] == 'cancelled']
+    if cancelled:
+        st.markdown('**Cancelled orders — explanation**')
+        table([{'Order': f"#{o['id']}", 'Supplier': o['supplier'], 'Component': o['component'],
+                'Status': 'Cancelled', 'Reason': recent.get(o['id'], {}).get('reason', 'See recovery history.')} for o in cancelled], 'Status')
+    with st.expander('View full recovery decision history'):
+        table([{'Order': f"#{r.get('order_id')}", 'Policy': r.get('policy'), 'Decision': label(r.get('decision')),
+                'Reason': r.get('reason')} for r in recovery[:30]], 'Decision')
+    pending_cancel = [o for o in orders if o['status'] == 'cancellation_requested']
+    if pending_cancel:
+        st.warning('Cancellation was requested. Supplier stock and budget remain reserved until confirmation.')
+        choices = {o['id']: o for o in pending_cancel}
+        oid = st.selectbox('Order waiting for supplier cancellation confirmation', list(choices), format_func=lambda n: f"#{n} · {choices[n]['supplier']}")
+        if st.button('Simulate supplier confirming cancellation', icon=':material/check_circle:'):
+            if not SECRET:
+                st.error('SUPPLIER_WEBHOOK_SECRET is not configured.')
+            else:
+                api('POST', f'/recovery/orders/{oid}/confirm-cancellation', timeout=100,
+                    headers={'X-Supplier-Secret': SECRET})
+                notify(f'Cancellation confirmed for order #{oid}. Replacement sourcing evaluated.')
     st.divider()
-    st.subheader("Agent investigation")
-    st.caption("Follow what Gemini actually inspected, which suppliers it compared, and what actions were executed.")
-    left, right = st.columns([1, 1], gap="large")
-    with left:
-        if st.button("Run AI evaluation", type="primary", use_container_width=True):
-            run_gemini()
-    with right:
-        st.caption(
-            "Inventory monitoring is ON — changes can trigger background evaluations."
-            if AUTO else "Automatic inventory monitoring is OFF. Use Run AI evaluation for this test."
-        )
-
-    manual = st.session_state.get("manual_agent_result")
+    st.subheader('ChainPilot investigation')
+    st.caption(f"Current policy — Speed {policy['speed_weight']} · Cost {policy['cost_weight']} · Reliability {policy['reliability_weight']} · Manager approval above {money(policy['approval_threshold'])}")
+    if st.button('Run ChainPilot', type='primary', icon=':material/play_arrow:'):
+        with st.spinner('Evaluating actual inventory, suppliers and policy...'):
+            st.session_state['cp_manual'] = api('POST', '/agent/run', timeout=180)
+        notify('ChainPilot finished its evaluation.')
+    manual = st.session_state.get('cp_manual')
     if manual:
-        st.caption(f"Last manual run: {label(manual.get('status'))} · {manual.get('elapsed_seconds', '?')} seconds")
-        render_agent_steps(manual.get("trace", []), manual.get("summary"))
+        run_result(manual)
     else:
-        st.caption("Run Gemini to see a complete decision trace here. Automatic tool activity appears below.")
-
-    def latest_agent_activity():
-        current_events = api("GET", "/activity")
-        if not current_events:
-            st.caption("No agent activity recorded yet.")
-            return
-        # This is a recent-activity view, NOT a guaranteed run identifier.
-        first_terminal = next(
-            (i for i, e in enumerate(current_events)
-             if e["action"] in ("agent_completed", "agent_failed")),
-            None,
-        )
-        if first_terminal is None or first_terminal > 0:
-            newest = current_events[0]["action"]
-            if newest in ("agent_tool_call", "agent_triggered_automatically"):
-                st.write("**Recent automatic activity:** evaluation started or tool execution recorded")
-            elif newest == "agent_failed":
-                st.write("**Recent automatic activity:** evaluation failed")
-        if first_terminal is not None:
-            event = current_events[first_terminal]
-            name = "Completed" if event["action"] == "agent_completed" else "Failed"
-            st.caption(f"Latest recorded agent result: {name} · {event.get('timestamp', '')[:19].replace('T',' ')} UTC")
-        tool_events = [e for e in current_events[:18] if e["action"] == "agent_tool_call"]
-        if tool_events:
-            tool_names = [safe_json(e.get("details")).get("tool", "unknown") for e in tool_events[:5]]
-            st.caption("Recent actual tools: " + " · ".join(tool_names))
-        st.caption("Activity refreshes every 5 seconds. This is log-based progress, not a real-time token stream.")
-
-    # Auto-refresh is available in Streamlit 1.39+.
-    if hasattr(st, "fragment"):
-        latest_agent_activity = st.fragment(run_every="5s")(latest_agent_activity)
-    with st.container(border=True):
-        latest_agent_activity()
-
-    with st.expander("Potential suppliers for current shortages"):
-        possible = []
-        for x in inventory:
-            if int(x["uncovered_shortage"]) <= 0:
-                continue
-            for supplier in suppliers:
-                if supplier["component"] != x["component"]:
-                    continue
-                is_eligible = bool(supplier["approved"]) and int(supplier["available"]) > 0 and int(supplier["delivery_days"]) <= int(policy["max_delivery_days"])
-                possible.append({
-                    "Needed component": x["component"],
-                    "Supplier": supplier["name"],
-                    "Available": supplier["available"],
-                    "Price / unit (SAR)": supplier["unit_price"],
-                    "Delivery days": supplier["delivery_days"],
-                    "Eligible by stock/time": "Yes" if is_eligible else "No",
-                })
-        if possible:
-            st.dataframe(possible, hide_index=True, use_container_width=True)
-            st.caption("These are current offers from the supplier database, not necessarily suppliers selected by Gemini.")
-        else:
-            st.write("No currently uncovered shortage or no supplier offers.")
-
+        st.caption('Run ChainPilot to see the purchasing outcome and optional detailed explanation.')
+    if recovery:
+        st.markdown('**Recent recovery decisions**')
+        st.caption('These decisions were recorded when supplier events or policy changes occurred, not necessarily during the manual run.')
+        for r in recovery[:3]:
+            with st.container(border=True):
+                st.markdown(f"**Order #{r.get('order_id')} · {label(r.get('decision'))}**")
+                st.write(r.get('reason') or 'No reason recorded.')
+    with st.expander('Automatic ChainPilot activity'):
+        automatic_history(logs)
     st.divider()
-    st.subheader("Purchase history and costs")
-    st.caption("Confirmed purchase orders and approval requests. ChainPilot does not transfer money.")
-    if orders:
-        st.dataframe([
-            {
-                "Order": o["id"], "Component": o["component"],
-                "Supplier": o["supplier"], "Units": o["quantity"],
-                "Received": o["received_quantity"], "Total (SAR)": o["total_cost"],
-                "Status": label(o["status"]),
-            }
-            for o in orders
-        ], hide_index=True, use_container_width=True)
-    else:
-        st.info("No purchase orders yet. Create a shortage on Factory Inventory, then run Gemini.")
-
-    # Pending approvals: visible, not hidden in menus.
-    if pending:
-        st.markdown("#### Orders requiring approval")
-        by_id = {o["id"]: o for o in pending}
-        chosen = st.selectbox(
-            "Select order", list(by_id),
-            format_func=lambda oid: f"Order #{oid} — {by_id[oid]['component']} — {money(by_id[oid]['total_cost'])}",
-        )
-        if st.button("Approve selected order"):
-            api("POST", f"/procurement/orders/{chosen}/approve")
-            finish(f"Order #{chosen} approved. Warehouse receipt is still required.")
-
-    with st.expander("Warehouse receiving — confirm physical delivery"):
-        eligible = [
-            o for o in orders if o["status"] in (
-                "placed", "delayed", "shipped", "awaiting_receipt", "partially_received"
-            ) and int(o["outstanding_quantity"]) > 0
-        ]
-        if not eligible:
-            st.caption("No approved orders awaiting receipt.")
+    st.subheader('Purchases and delivery')
+    table(order_rows(orders), 'Status')
+    if approvals:
+        st.markdown('**Manager approvals**')
+        for o in approvals:
+            with st.container(border=True):
+                a, b = st.columns([4, 1], vertical_alignment='center')
+                a.markdown(f"**Order #{o['id']} · {o['supplier']} · {o['quantity']} {o['component']}**")
+                a.caption(f"{money(o['total_cost'])} · Approval policy applies to this purchase (or its combined sourcing plan).")
+                if b.button('Approve', key=f"approve_{o['id']}", icon=':material/check:', use_container_width=True):
+                    api('POST', f"/procurement/orders/{o['id']}/approve")
+                    notify(f"Order #{o['id']} approved.")
+    with st.expander('Warehouse receiving — confirm physical delivery'):
+        candidates = [o for o in orders if o['status'] in RECEIVABLE and o.get('outstanding_quantity', 0) > 0]
+        if not candidates:
+            st.caption('No approved orders are waiting for receipt.')
         else:
-            by_id = {o["id"]: o for o in eligible}
-            with st.form("receipt_form"):
-                selected = st.selectbox("Order", list(by_id), format_func=lambda oid: f"#{oid} · {by_id[oid]['supplier']} · {by_id[oid]['component']}")
-                number = st.number_input("Units actually received", min_value=1, max_value=int(by_id[selected]["outstanding_quantity"]), value=int(by_id[selected]["outstanding_quantity"]))
-                submit = st.form_submit_button("Confirm receipt")
+            opts = {o['id']: o for o in candidates}
+            with st.form('receive'):
+                oid = st.selectbox('Purchase order', list(opts), format_func=lambda n: f"#{n} · {opts[n]['supplier']} · {opts[n]['component']}")
+                qty = st.number_input('Units physically received', min_value=1, max_value=int(opts[oid]['outstanding_quantity']), value=int(opts[oid]['outstanding_quantity']))
+                submit = st.form_submit_button('Confirm warehouse receipt')
             if submit:
-                result = api("POST", f"/procurement/orders/{selected}/receive", json={"receipt_id": str(uuid.uuid4()), "quantity": int(number)})
-                finish(f"Warehouse inventory increased by {result['quantity_added']} units.")
+                rec = api('POST', f'/procurement/orders/{oid}/receive', json={'receipt_id': str(uuid.uuid4()), 'quantity': int(qty)})
+                notify(f"Factory stock increased by {rec.get('quantity_added', 0)} units.")
+    with st.expander('Recent business activity'):
+        records = []
+        for e in logs:
+            msg = event_message(e, lookup)
+            if msg:
+                records.append({'UTC time': str(e.get('timestamp', ''))[:19], 'Event': msg})
+            if len(records) == 20:
+                break
+        table(records)
 
-    st.divider()
-    st.subheader("Recent activity")
-    log_rows = recent_business_events(events)[:12]
-    if log_rows:
-        st.dataframe(log_rows, hide_index=True, use_container_width=True)
+elif page == 'Factory Inventory':
+    st.markdown('<div class="cp-kicker">WAREHOUSE</div>', unsafe_allow_html=True)
+    st.title('Factory Inventory')
+    st.markdown('<div class="cp-description">Track the difference between physical stock, incoming orders and unmet demand.</div>', unsafe_allow_html=True)
+    inv = api('GET', '/inventory/')
+    table([{'Component': i['component'], 'Warehouse stock': i['stock'], 'Demand': i['demand'],
+            'Already ordered': i['ordered_or_pending'], 'Unfulfilled': i['uncovered_shortage']} for i in inv])
+    total = sum(int(i['uncovered_shortage']) for i in inv)
+    if total:
+        st.warning(f'{total} units are still uncovered.')
     else:
-        st.caption("No business activity recorded yet.")
-
-
-# ---- FACTORY INVENTORY ------------------------------------------------
-elif page == "Factory Inventory":
-    st.markdown('<div class="cp-kicker">Operations / Factory</div>', unsafe_allow_html=True)
-    st.title("Factory Inventory")
-    st.caption("Adjust physical stock, change production demand, or replay a controlled scenario.")
-    inventory = api("GET", "/inventory/")
-    st.dataframe([
-        {"Component": x["component"], "In warehouse": x["stock"], "Production demand": x["demand"],
-         "Already ordered": x["ordered_or_pending"], "Still needed": x["uncovered_shortage"]}
-        for x in inventory
-    ], hide_index=True, use_container_width=True)
-    st.caption("Already ordered includes pending approval. It is not physically available until receipt confirmation.")
-
-    c1, c2 = st.columns(2, gap="large")
-    with c1:
-        st.subheader("Change physical stock")
-        with st.form("stock_adjustment"):
-            component = st.selectbox("Component", [x["component"] for x in inventory])
-            action = st.radio("Change type", ["consume", "add"], horizontal=True, format_func=lambda x: "Use in production" if x == "consume" else "Manual adjustment (+)")
-            quantity = st.number_input("Units", min_value=1, value=20, step=1)
-            save = st.form_submit_button("Apply adjustment", type="primary")
-        if save:
-            result = api("POST", f"/demo/inventory/{component}/adjust", json={"action": action, "quantity": int(quantity)})
-            st.session_state.pop("manual_agent_result", None)
-            finish(f"{component} stock: {result['previous_stock']} → {result['new_stock']} units.")
-    with c2:
-        st.subheader("Change production demand")
-        st.caption("In this demo, one of each component is required per laptop.")
-        with st.form("production_target"):
-            target = st.number_input("Laptops planned", min_value=0, value=int(inventory[0]["demand"]) if inventory else 500, step=50)
-            change = st.form_submit_button("Save demand")
-        if change:
-            api("POST", "/demo/production-target", json={"target": int(target)})
-            st.session_state.pop("manual_agent_result", None)
-            finish(f"Production target set to {target} laptops.")
-
-    st.divider()
-    st.subheader("Demo scenarios")
-    st.caption("Recreate the split-supplier example or return to the original data.")
-    with st.expander("Load scenario or reset factory"):
-        st.warning("These actions clear fictional orders, receipts and activity. Do not use them during an agent evaluation.")
-        confirm = st.checkbox("I understand the existing demo records will be replaced")
-        a, b = st.columns(2)
-        if a.button("Load 300-battery shortage", disabled=not confirm, use_container_width=True):
-            api("POST", "/demo/scenario", json={"name": "battery_split"})
-            st.session_state.pop("manual_agent_result", None)
-            finish("Split-supplier scenario loaded. Open Dashboard to evaluate.")
-        if b.button("Reset to starting factory", disabled=not confirm, use_container_width=True):
-            api("POST", "/demo/reset")
-            st.session_state.pop("manual_agent_result", None)
-            finish("Factory demo reset.")
-    st.info("Automatic inventory evaluation is ENABLED." if AUTO else "Automatic inventory evaluation is OFF. Run Gemini manually on Dashboard.")
-
-
-# ---- SUPPLIERS --------------------------------------------------------
-elif page == "Suppliers":
-    st.markdown('<div class="cp-kicker">Operations / Procurement network</div>', unsafe_allow_html=True)
-    st.title("Suppliers")
-    st.caption("Remaining supplier stock, existing reservations, costs, and delivery expectations.")
-    suppliers = api("GET", "/suppliers/")
-    orders = api("GET", "/procurement/orders")
-    filter_options = ["All"] + sorted({s["component"] for s in suppliers})
-    component_filter = st.selectbox("Component", filter_options)
-    active = {"pending_approval", "placed", "delayed", "shipped", "awaiting_receipt", "partially_received"}
-    displayed = []
-    for s in suppliers:
-        if component_filter != "All" and s["component"] != component_filter:
-            continue
-        reserved = sum(
-            int(o.get("outstanding_quantity") or 0)
-            for o in orders if o["supplier_id"] == s["id"] and o["status"] in active
-        )
-        displayed.append({
-            "Supplier": s["name"], "Component": s["component"], "Available": s["available"],
-            "Reserved": reserved, "Price / unit (SAR)": s["unit_price"],
-            "Delivery (days)": s["delivery_days"], "Reliability (%)": s["reliability"],
-            "Status": "Eligible" if s["approved"] else "Paused",
-        })
-    st.dataframe(displayed, hide_index=True, use_container_width=True)
-    st.caption("Available quantity decreases as purchase orders are reserved. Reserved units are not yet factory stock.")
-
-    st.divider()
-    st.subheader("Supplier updates")
-    st.caption("Simulate a delivery delay, cancellation, quantity reduction, or shipment update for an approved order.")
-    secret = os.getenv("SUPPLIER_WEBHOOK_SECRET")
-    active_orders = [o for o in orders if o["status"] not in ("pending_approval", "cancelled", "received", "rejected")]
-    if not secret:
-        st.info("Configure SUPPLIER_WEBHOOK_SECRET in your project's .env file to use simulated supplier notifications.")
-    elif not active_orders:
-        st.info("No active approved purchase orders. Approve an order on Dashboard first.")
-    else:
-        by_id = {o["id"]: o for o in active_orders}
-        oid = st.selectbox("Order", list(by_id), format_func=lambda x: f"#{x} · {by_id[x]['supplier']} · {by_id[x]['component']}")
-        event_kind = st.selectbox("Supplier update", ["delayed", "cancelled", "partial_fulfillment", "shipped", "delivered"], format_func=label)
-        with st.form("supplier_event"):
-            days = None
-            fulfillable = None
-            if event_kind == "delayed":
-                days = st.number_input("Updated delivery estimate (days)", min_value=1, value=5)
-            if event_kind == "partial_fulfillment":
-                order = by_id[oid]
-                fulfillable = st.number_input("Total quantity supplier can fulfill", min_value=int(order["received_quantity"]), max_value=int(order["fulfillable_quantity"]), value=int(order["fulfillable_quantity"]))
-            note = st.text_input("Supplier note", "Demonstration update")
-            submit = st.form_submit_button("Send supplier update", type="primary")
+        st.success('All demand is covered by warehouse stock and existing orders.')
+    a, b = st.columns(2, gap='large')
+    with a:
+        st.subheader('Adjust warehouse stock')
+        with st.form('stock'):
+            comp = st.selectbox('Component', [i['component'] for i in inv])
+            action = st.radio('Action', ['consume', 'add'], horizontal=True, format_func=lambda x: 'Consume in production' if x == 'consume' else 'Add stock')
+            qty = st.number_input('Number of units', min_value=1, value=20)
+            submit = st.form_submit_button('Save stock change', type='primary')
         if submit:
-            payload = {"event_id": str(uuid.uuid4()), "order_id": int(oid), "event_type": event_kind, "note": note}
-            if days is not None:
-                payload["expected_delivery_days"] = int(days)
-            if fulfillable is not None:
-                payload["fulfillable_quantity"] = int(fulfillable)
-            result = api("POST", "/supplier-events/", json=payload, headers={"X-Supplier-Secret": secret})
-            finish(result.get("message", "Supplier update recorded") + (" · Agent scheduled" if result.get("agent_triggered") else ""))
-    st.caption("A supplier saying 'delivered' never adds stock. Warehouse receiving is confirmed on Dashboard.")
+            res = api('POST', f'/demo/inventory/{comp}/adjust', json={'action': action, 'quantity': int(qty)})
+            st.session_state.pop('cp_manual', None)
+            notify(f"{comp} warehouse stock: {res['previous_stock']} → {res['new_stock']}.")
+    with b:
+        st.subheader('Production target')
+        with st.form('target'):
+            qty = st.number_input('Laptops to manufacture', min_value=0, value=int(inv[0]['demand']) if inv else 500, step=50)
+            submit = st.form_submit_button('Save target')
+        if submit:
+            api('POST', '/demo/production-target', json={'target': int(qty)})
+            st.session_state.pop('cp_manual', None)
+            notify(f'Production target updated to {qty}.')
+    with st.expander('Demo scenarios and reset'):
+        st.warning('These actions clear demo order and activity history. Do not reset while the agent is running.')
+        confirm = st.checkbox('I understand this resets demo records.')
+        a, b = st.columns(2)
+        if a.button('Load 300-battery scenario', disabled=not confirm, use_container_width=True):
+            api('POST', '/demo/scenario', json={'name': 'battery_split'})
+            st.session_state.pop('cp_manual', None)
+            notify('Battery scenario loaded.')
+        if b.button('Reset factory', disabled=not confirm, use_container_width=True):
+            api('POST', '/demo/reset')
+            st.session_state.pop('cp_manual', None)
+            notify('Demo restored to seed data.')
 
+elif page == 'Suppliers':
+    st.markdown('<div class="cp-kicker">SUPPLIER NETWORK</div>', unsafe_allow_html=True)
+    st.title('Suppliers')
+    st.markdown('<div class="cp-description">Review supplier availability and simulate messages on real purchase orders.</div>', unsafe_allow_html=True)
+    suppliers = api('GET', '/suppliers/')
+    orders = api('GET', '/procurement/orders')
+    category = st.selectbox('Component filter', ['All'] + sorted({s['component'] for s in suppliers}))
+    view = []
+    for s in suppliers:
+        if category != 'All' and s['component'] != category:
+            continue
+        reserved = sum(int(o.get('outstanding_quantity') or 0) for o in orders if o['supplier_id'] == s['id'] and o['status'] in ACTIVE)
+        view.append({'Supplier': s['name'], 'Component': s['component'], 'Available': s['available'],
+                     'Reserved': reserved, 'Unit price (SAR)': s['unit_price'], 'Delivery (days)': s['delivery_days'],
+                     'Reliability (%)': s['reliability'], 'Status': 'Eligible' if s['approved'] else 'Paused'})
+    table(view, 'Status')
+    st.subheader('Existing supplier orders')
+    table(order_rows(orders), 'Status')
+    st.divider()
+    st.subheader('Simulate a supplier update')
+    eligible = [o for o in orders if o['status'] in RECEIVABLE and int(o.get('outstanding_quantity') or 0) > 0]
+    if not SECRET:
+        st.warning('Configure SUPPLIER_WEBHOOK_SECRET in .env for supplier notifications.')
+    elif not eligible:
+        st.info('There are no approved active purchase orders to update.')
+    else:
+        companies = {o['supplier_id']: o['supplier'] for o in eligible}
+        sid = st.selectbox('Supplier', list(companies), format_func=lambda v: companies[v])
+        relevant = {o['id']: o for o in eligible if o['supplier_id'] == sid}
+        oid = st.selectbox('Order', list(relevant), format_func=lambda v: f"#{v} · {relevant[v]['component']} · {relevant[v]['outstanding_quantity']} remaining")
+        order = relevant[oid]
+        kind = st.selectbox('What did the supplier report?', ['delayed', 'cancelled', 'partial_fulfillment', 'shipped', 'delivered'],
+                            format_func=lambda v: {'delayed': 'Delivery delayed', 'cancelled': 'Supplier cancelled the order',
+                                                   'partial_fulfillment': 'Can deliver fewer units', 'shipped': 'Shipped (in transit)',
+                                                   'delivered': 'Delivered to factory'}[v])
+        with st.form('supplier_event'):
+            days, fulfilled = None, None
+            if kind == 'delayed':
+                days = st.number_input('New delivery estimate (days)', min_value=1, value=max(5, int(order.get('expected_delivery_days') or 1)))
+            if kind == 'partial_fulfillment':
+                fulfilled = st.number_input('Total units supplier can fulfill', min_value=int(order['received_quantity']),
+                                            max_value=int(order['fulfillable_quantity']), value=int(order['fulfillable_quantity']))
+            note = st.text_input('Supplier note', value='Demo supplier notification')
+            send = st.form_submit_button('Send supplier update', type='primary')
+        if send:
+            if kind == 'partial_fulfillment' and fulfilled == 0:
+                st.error('Choose Supplier cancelled if zero units can be fulfilled.')
+            else:
+                payload = {'event_id': str(uuid.uuid4()), 'order_id': int(oid), 'event_type': kind, 'note': note}
+                if days is not None:
+                    payload['expected_delivery_days'] = int(days)
+                if fulfilled is not None:
+                    payload['fulfillable_quantity'] = int(fulfilled)
+                result = api('POST', '/supplier-events/', json=payload, headers={'X-Supplier-Secret': SECRET}, timeout=100)
+                decisions = result.get('recovery_decisions') or []
+                receipt = result.get('warehouse_receipt') or {}
+                msg = (decisions[0].get('reason') if decisions else
+                       f"Warehouse received {receipt.get('quantity_added')} units" if receipt else
+                       result.get('message') or f'Supplier update recorded for order #{oid}.')
+                notify(msg, ':material/info:' if kind == 'delayed' else ':material/check_circle:')
+    st.caption('Shipped means in transit. In demo mode, Delivered updates factory stock if the supplier delivery backend update is installed.')
 
-# ---- SETTINGS / POLICIES ---------------------------------------------
-else:
-    st.markdown('<div class="cp-kicker">Administration / Settings</div>', unsafe_allow_html=True)
-    st.title("Procurement Policies")
-    st.caption("Set supplier priorities and hard limits. Changes apply to new decisions, not existing orders.")
-    policy = api("GET", "/policies/")
-    presets = {
-        "Current / Custom": None,
-        "Production First": (70, 10, 20),
-        "Budget First": (15, 75, 10),
-        "Balanced": (35, 35, 30),
-    }
-    choice = st.selectbox("Purchasing strategy", list(presets), key="strategy")
-    weights = presets[choice] or (
-        int(policy["speed_weight"]), int(policy["cost_weight"]), int(policy["reliability_weight"])
-    )
-    st.subheader("Supplier priorities")
-    with st.form("policy_form"):
-        a, b, c = st.columns(3)
-        speed = a.slider("Delivery speed", 0, 100, int(weights[0]), key="speed_" + choice)
-        cost = b.slider("Lower cost", 0, 100, int(weights[1]), key="cost_" + choice)
-        reliability = c.slider("Reliability", 0, 100, int(weights[2]), key="reliability_" + choice)
-        st.subheader("Purchasing limits")
-        d, e, f = st.columns(3)
-        budget = d.number_input("Max outstanding budget (SAR)", min_value=1.0, value=float(policy["max_budget"]), step=500.0)
-        days = e.number_input("Max delivery (days)", min_value=1, value=int(policy["max_delivery_days"]))
-        threshold = f.number_input("Manager approval above (SAR)", min_value=0.0, value=float(policy["approval_threshold"]), step=500.0)
-        save = st.form_submit_button("Save policy", type="primary")
+else:  # Settings
+    st.markdown('<div class="cp-kicker">ADMINISTRATION</div>', unsafe_allow_html=True)
+    st.title('Purchasing policies')
+    st.markdown('<div class="cp-description">Choose how ChainPilot balances speed, cost and reliability. These settings also guide recovery decisions.</div>', unsafe_allow_html=True)
+    policy = api('GET', '/policies/')
+    presets = {'Current / Custom': None, 'Production First': (70, 10, 20), 'Budget First': (15, 75, 10), 'Balanced': (35, 35, 30)}
+    choice = st.selectbox('Purchasing strategy', list(presets))
+    weights = presets[choice] or (int(policy['speed_weight']), int(policy['cost_weight']), int(policy['reliability_weight']))
+    st.caption('Percentage fields replace the misaligned sliders. The bars underneath always correspond to the values shown.')
+    def ascii_number(text, name, integer=False):
+        trans = str.maketrans('٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹', '01234567890123456789')
+        clean = str(text).translate(trans).replace(',', '').replace('٬', '').strip()
+        try:
+            number = int(clean) if integer else float(clean)
+        except ValueError:
+            raise ValueError(f'{name}: enter a valid English-digit number.')
+        if number < 0:
+            raise ValueError(f'{name}: cannot be negative.')
+        return number
+    with st.form('policies'):
+        cols = st.columns(3)
+        labels = ['Delivery speed (%)', 'Low purchase cost (%)', 'Supplier reliability (%)']
+        fields = []
+        for i, col in enumerate(cols):
+            with col:
+                value = st.text_input(labels[i], value=str(weights[i]), key=f'weight_{choice}_{i}')
+                fields.append(value)
+                st.progress(int(weights[i]) / 100)
+        st.markdown('<div class="cp-section">Purchasing limits</div>', unsafe_allow_html=True)
+        cols = st.columns(3)
+        with cols[0]:
+            budget_raw = st.text_input('Maximum outstanding budget (SAR)', value=str(int(float(policy['max_budget']))))
+        with cols[1]:
+            days_raw = st.text_input('Maximum delivery days', value=str(int(policy['max_delivery_days'])))
+        with cols[2]:
+            threshold_raw = st.text_input('Approval threshold (SAR)', value=str(int(float(policy['approval_threshold']))))
+        save = st.form_submit_button('Save purchasing policy', type='primary', icon=':material/save:')
     if save:
-        if speed + cost + reliability <= 0:
-            st.error("At least one supplier priority must be positive.")
+        try:
+            speed, cost, reliability = [ascii_number(x, labels[i], True) for i, x in enumerate(fields)]
+            budget = ascii_number(budget_raw, 'Budget')
+            days = ascii_number(days_raw, 'Delivery days', True)
+            approval = ascii_number(threshold_raw, 'Approval threshold')
+            if any(x > 100 for x in (speed, cost, reliability)) or not (speed + cost + reliability):
+                raise ValueError('Priorities must be between 0 and 100, with at least one above zero.')
+            if budget <= 0 or days < 1:
+                raise ValueError('Budget must be positive and delivery days must be at least 1.')
+        except ValueError as exc:
+            st.error(str(exc))
         else:
-            api("PUT", "/policies/", json={
-                "speed_weight": speed, "cost_weight": cost, "reliability_weight": reliability,
-                "max_budget": budget, "max_delivery_days": days, "approval_threshold": threshold,
-            })
-            finish("Company purchasing policy saved.")
-    st.caption("An outstanding budget is the maximum value of active, unreceived commitments—not money paid.")
-    st.button("Back to Dashboard", on_click=go_to, args=("Dashboard",))
+            api('PUT', '/policies/', json={'speed_weight': speed, 'cost_weight': cost,
+                'reliability_weight': reliability, 'max_budget': budget, 'max_delivery_days': days,
+                'approval_threshold': approval}, timeout=100)
+            notify('Purchasing policy saved. Open orders were reviewed.')
+    st.info('Automatic supplier cancellation confirmation is ' + ('enabled' if AUTOCANCEL else 'disabled') + '. This affects only the fictional supplier simulation.')
+    if st.button('Back to Dashboard', icon=':material/arrow_back:'):
+        go('Dashboard')
